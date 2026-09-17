@@ -2,6 +2,8 @@ import asyncio
 import os
 import sys
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
 
 from telegram_listener import TelegramSignalListener
@@ -26,7 +28,27 @@ def build_exchange():
     )
 
 
+def start_health_server():
+    port = int(os.getenv("PORT", "10000"))
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+
 def main():
+    threading.Thread(target=start_health_server, daemon=True).start()
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
     print("=" * 70)
