@@ -1,0 +1,35 @@
+services:
+  - type: worker
+    name: crypto-bot
+    region: omaha
+    plan: free
+    env: docker
+    dockerfilePath: telegram-bot/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELEGRAM_CHANNEL
+        sync: false
+      - key: TELEGRAM_STRING_SESSION
+        sync: false
+      - key: EXCHANGE_PROVIDER
+        value: paper
+      - key: MODE
+        value: paper
+      - key: TRADE_CAPITAL_INR
+        value: "30000"
+      - key: DEFAULT_SL_PERCENT
+        value: "2.0"
+      - key: TARGET_PRIORITY
+        value: "T3,T2,T1"
+      - key: HISTORY_BACKFILL
+        value: "0"
+      - key: SL_OFFSET_POINTS
+        value: "20"
+      - key: SIGNAL_MAX_AGE_MINUTES
+        value: "10"
+      - key: BOT_MAX_RESTARTS
+        value: "10"

@@ -1,0 +1,28 @@
+# fly.toml app configuration file for the crypto-bot Telegram trading bot.
+#
+# Create a free account at https://fly.io, then deploy:
+#   fly launch --name crypto-bot-telegram --image-from-dockerfile telegram-bot/Dockerfile --no-volume
+#
+# The free plan includes 3 shared VMs (256 MB RAM each) — enough for this bot.
+# No inbound ports needed; the bot maintains an outbound connection to Telegram.
+
+app = "crypto-bot-telegram"
+primary_region = "iad"
+
+[build]
+  dockerfile = "telegram-bot/Dockerfile"
+
+[env]
+  EXCHANGE_PROVIDER = "paper"
+  MODE = "paper"
+  TRADE_CAPITAL_INR = "30000"
+  DEFAULT_SL_PERCENT = "2.0"
+  TARGET_PRIORITY = "T3,T2,T1"
+  HISTORY_BACKFILL = "0"
+  SL_OFFSET_POINTS = "20"
+  SIGNAL_MAX_AGE_MINUTES = "10"
+  BOT_MAX_RESTARTS = "10"
+
+# The bot is a background worker — no HTTP services or health checks needed.
+# Fly restarts the VM automatically if the process exits.
+

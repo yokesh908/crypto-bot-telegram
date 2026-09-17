@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# Project-specific
+.env
+*.session
+*.log
+telegram_session.session
+telegram_session.session-*
+
+# Other
+.git/
+.gitignore
+freqtrade/
+assistant/
+arbitrage-scanner/
+replay/
+music/
+pg-manager/
+node_modules/
+*.pid

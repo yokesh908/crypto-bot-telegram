@@ -1,0 +1,6 @@
+telethon>=1.36
+python-dotenv>=1.0
+ccxt>=4.0
+aiohttp>=3.9
+websockets>=12.0
+kiteconnect>=5.0

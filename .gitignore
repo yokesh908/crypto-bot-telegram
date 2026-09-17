@@ -1,0 +1,38 @@
+# Environment variables (secrets - set in cloud dashboard)
+.env
+
+# Telegram / session files
+*.session
+telegram_session*
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# Trading data (ephemeral)
+trades_log.csv
+trades_seen.json
+opportunities.csv
+paper_trades.csv
+assistant.pid
+
+# Unrelated project directories
+freqtrade/
+assistant/
+arbitrage-scanner/
+replay/
+music/
+pg-manager/
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
