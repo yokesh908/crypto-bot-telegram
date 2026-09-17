@@ -1,12 +1,15 @@
 services:
   - type: worker
     name: crypto-bot
-    region: omaha
+    region: singapore
     plan: free
-    env: docker
+    runtime: docker
     dockerfilePath: telegram-bot/Dockerfile
+    dockerContext: .
     autoDeploy: true
     envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: TELEGRAM_API_ID
         sync: false
       - key: TELEGRAM_API_HASH
@@ -14,6 +17,12 @@ services:
       - key: TELEGRAM_CHANNEL
         sync: false
       - key: TELEGRAM_STRING_SESSION
+        sync: false
+      - key: KITE_API_KEY
+        sync: false
+      - key: KITE_API_SECRET
+        sync: false
+      - key: KITE_ACCESS_TOKEN
         sync: false
       - key: EXCHANGE_PROVIDER
         value: paper
@@ -23,6 +32,20 @@ services:
         value: "30000"
       - key: DEFAULT_SL_PERCENT
         value: "2.0"
+      - key: DEFAULT_TARGET_PERCENT
+        value: "2.0"
+      - key: MAX_SL_PERCENT
+        value: "25"
+      - key: MAX_SL_POINTS
+        value: "12"
+      - key: MIN_SL_POINTS
+        value: "5"
+      - key: BREAKEVEN_AT_T1
+        value: "1"
+      - key: TRAIL_TO_T1_AT_T2
+        value: "1"
+      - key: MAX_RISK_PER_TRADE_INR
+        value: "3000"
       - key: TARGET_PRIORITY
         value: "T3,T2,T1"
       - key: HISTORY_BACKFILL
@@ -31,5 +54,9 @@ services:
         value: "20"
       - key: SIGNAL_MAX_AGE_MINUTES
         value: "10"
+      - key: SIGNAL_DEDUP_WINDOW_SEC
+        value: "600"
       - key: BOT_MAX_RESTARTS
-        value: "10"
+        value: "100000"
+      - key: BOT_RESTART_DELAY_SEC
+        value: "15"
