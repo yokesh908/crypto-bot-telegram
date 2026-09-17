@@ -94,6 +94,7 @@ class SignalExecutor:
                     "exit_price",
                     "exit_reason",
                     "pnl",
+                    "channel",
                 ])
 
     def _log_trade(self, data):
@@ -112,17 +113,97 @@ class SignalExecutor:
                 data.get("exit_price"),
                 data.get("exit_reason"),
                 data.get("pnl"),
+                data.get("channel", ""),
             ])
         # Persist the dedup set after each trade so a crash/restart does not
         # re-trade the same signal.
         self._save_seen()
 
     # ----------------------------------------------------------
+    # ENHANCED SL (profit with less risk)
+    # ----------------------------------------------------------
+    def _apply_enhanced_sl(self, entry, raw_sl, direction, source="signal"):
+        """Cap channel SL distance + fix wrong-side typos.
+
+        Env knobs (all optional):
+          MAX_SL_PERCENT=25        max risk distance as % of entry
+          MAX_SL_POINTS=12         max risk distance in premium points
+          MIN_SL_POINTS=5          min risk distance (avoid instant SL hunt)
+          BREAKEVEN_AT_T1=1        move SL to entry once T1 touched (1/0)
+          TRAIL_TO_T1_AT_T2=1      move SL to T1 once T2 touched (1/0)
+          MAX_RISK_PER_TRADE_INR=3000  quantity sized so SL loss <= this
+        Returns the tightened SL price.
+        """
+        max_pct = float(os.getenv("MAX_SL_PERCENT", "25") or 25)
+        max_pts = float(os.getenv("MAX_SL_POINTS", "12") or 12)
+        min_pts = float(os.getenv("MIN_SL_POINTS", "5") or 5)
+
+        if direction == "BUY":
+            wrong_side = raw_sl >= entry
+        else:
+            wrong_side = raw_sl <= entry
+
+        if wrong_side:
+            # channel typo: rebuild from the tighter of % / pts caps
+            cap_dist = min(entry * max_pct / 100.0, max_pts)
+            cap_dist = max(cap_dist, min_pts)
+            fixed = entry - cap_dist if direction == "BUY" else entry + cap_dist
+            print(f"[EXECUTOR][SL] {raw_sl} wrong side of entry {entry} "
+                  f"-> tightened to {fixed:.2f} "
+                  f"(cap {cap_dist:.2f} pts, {max_pct:.0f}%/{max_pts:.0f}pts)")
+            return fixed
+
+        risk = abs(entry - raw_sl)
+        cap_dist = min(entry * max_pct / 100.0, max_pts)
+        cap_dist = max(cap_dist, min_pts)
+
+        if risk > cap_dist:
+            tight = entry - cap_dist if direction == "BUY" else entry + cap_dist
+            print(f"[EXECUTOR][SL] channel SL {raw_sl} risk {risk:.2f} pts "
+                  f"too wide -> tightened to {tight:.2f} "
+                  f"(cap {cap_dist:.2f} pts from {max_pct:.0f}%/{max_pts:.0f}pts)")
+            return tight
+
+        if risk < min_pts:
+            floored = entry - min_pts if direction == "BUY" else entry + min_pts
+            print(f"[EXECUTOR][SL] channel SL {raw_sl} risk {risk:.2f} pts "
+                  f"too tight -> floored to {floored:.2f} "
+                  f"(min {min_pts:.0f} pts)")
+            return floored
+
+        print(f"[EXECUTOR][SL] channel SL {raw_sl} kept "
+              f"(risk {risk:.2f} pts within cap {cap_dist:.2f})")
+        return raw_sl
+
+    def _risk_capped_qty(self, entry_price, sl_price, default_qty):
+        """Shrink quantity so a full SL hit loses <= MAX_RISK_PER_TRADE_INR."""
+        try:
+            max_risk = float(os.getenv("MAX_RISK_PER_TRADE_INR", "3000") or 3000)
+        except ValueError:
+            max_risk = 3000.0
+        if max_risk <= 0:
+            return default_qty
+        risk_per_unit = abs(entry_price - sl_price)
+        if risk_per_unit <= 0:
+            return default_qty
+        capped = max_risk / risk_per_unit
+        # never increase size, only shrink; keep at least 1 unit
+        qty = min(float(default_qty), capped)
+        qty = max(round(qty, 2), 1.0)
+        if qty < float(default_qty):
+            print(f"[EXECUTOR][SL] qty {default_qty} -> {qty} "
+                  f"(risk capped to Rs{max_risk:.0f}, "
+                  f"SL dist {risk_per_unit:.2f} pts)")
+        return qty
+
+    # ----------------------------------------------------------
     # SIGNAL HANDLER (called from Telegram thread)
     # ----------------------------------------------------------
 
-    def on_signal_text(self, text):
+    def on_signal_text(self, text, channel=""):
         print("\n[EXECUTOR] Parsing signal ...")
+        if channel:
+            print(f"[EXECUTOR] Channel: {channel}")
         signal = parse_signal(text)
 
         if signal is None:
@@ -140,6 +221,7 @@ class SignalExecutor:
                   "already seen recently.")
             return
 
+        signal.channel = channel or ""
         self.execute_signal(signal)
 
     # ---- persistent duplicate guard (survives restarts) ----
@@ -229,12 +311,17 @@ class SignalExecutor:
         print(f"Targets    : {signal.targets}")
         print("*" * 70)
 
-        # SL rule: use the channel's SL if given; otherwise default to
-# entry - 20 pts (BUY) / entry + 20 pts (SELL). Offset config via
-# SL_OFFSET_POINTS (disable with "").
+        # SL rule (ENHANCED - low risk):
+        # 1) start from channel SL if given, else entry +/- SL_OFFSET_POINTS
+        # 2) CAP the risk distance to min(MAX_SL_PERCENT%, MAX_SL_POINTS)
+        #    so a wide channel SL (e.g. 100 -> 65 = 35 pts risk) can't blow
+        #    up the account in one trade.
+        # 3) FLOOR the distance to MIN_SL_POINTS so SL isn't impossibly tight.
+        # 4) SIZE the quantity so max loss <= MAX_RISK_PER_TRADE_INR.
         if signal.stoploss is not None:
-            stoploss = signal.stoploss
-            print(f"[EXECUTOR] SL from signal : {stoploss}")
+            raw_stoploss = signal.stoploss
+            sl_source = "signal"
+            print(f"[EXECUTOR] SL from signal : {raw_stoploss}")
         else:
             sl_offset_raw = os.getenv("SL_OFFSET_POINTS", "20")
             sl_offset = None
@@ -245,34 +332,26 @@ class SignalExecutor:
                     sl_offset = None
             if sl_offset is None or sl_offset <= 0:
                 sl_offset = float(os.getenv("DEFAULT_SL_PERCENT", "2.0"))
-                stoploss = (
+                raw_stoploss = (
                     signal.entry * (1 - sl_offset / 100)
                     if signal.direction == "BUY"
                     else signal.entry * (1 + sl_offset / 100)
                 )
                 print(f"[EXECUTOR] SL not in signal -> default "
-                      f"{sl_offset}% = {stoploss}")
+                      f"{sl_offset}% = {raw_stoploss}")
             else:
-                stoploss = (
+                raw_stoploss = (
                     signal.entry - sl_offset
                     if signal.direction == "BUY"
                     else signal.entry + sl_offset
                 )
                 print(f"[EXECUTOR] SL not in signal -> entry "
-                      f"{sl_offset} pts = {stoploss}")
+                      f"{sl_offset} pts = {raw_stoploss}")
+            sl_source = "default"
 
-        # Sanity check the SL side: a BUY SL must be below the entry,
-        # a SELL SL above it. Channel typos otherwise create instant
-        # wrong-side losses.
-        sl_offset_def = float(os.getenv("SL_OFFSET_POINTS", "20") or 20)
-        if signal.direction == "BUY" and stoploss >= signal.entry:
-            print(f"[EXECUTOR] SL {stoploss} not below entry - fixing "
-                  f"to entry-{sl_offset_def:.0f} pts")
-            stoploss = signal.entry - sl_offset_def
-        elif signal.direction == "SELL" and stoploss <= signal.entry:
-            print(f"[EXECUTOR] SL {stoploss} not above entry - fixing "
-                  f"to entry+{sl_offset_def:.0f} pts")
-            stoploss = signal.entry + sl_offset_def
+        stoploss = self._apply_enhanced_sl(
+            signal.entry, raw_stoploss, signal.direction, sl_source,
+        )
 
         primary_target = self._pick_primary_target(
             signal.targets, signal.direction, signal.entry
@@ -331,24 +410,32 @@ class SignalExecutor:
                           f"{entry_price} -> rebased to {scaled_tp:.2f}")
                     tp_price = scaled_tp
 
+            # SL: ALWAYS re-anchor to the fill keeping the TIGHTENED risk
+            # distance. A fill far from the signal premium (gap/stale quote)
+            # would otherwise leave the SL 85+ pts away = uncapped risk.
             if sl_price is not None:
-                sl_wrong_side = (
-                    sl_price >= entry_price
-                    if signal.direction == "BUY"
-                    else sl_price <= entry_price
-                )
-                if sl_wrong_side:
-                    risk = abs(ref - sl_price)
-                    if risk <= 0:
-                        risk = float(os.getenv("SL_OFFSET_POINTS", "20") or 20)
-                    scaled_sl = (
-                        entry_price - risk
-                        if signal.direction == "BUY"
-                        else entry_price + risk
+                risk = abs(ref - stoploss)
+                if risk <= 0:
+                    risk = min(
+                        entry_price
+                        * float(os.getenv("MAX_SL_PERCENT", "25") or 25)
+                        / 100.0,
+                        float(os.getenv("MAX_SL_POINTS", "12") or 12),
                     )
-                    print(f"[EXECUTOR] SL {sl_price} on wrong side of fill "
-                          f"{entry_price} -> rebased to {scaled_sl:.2f}")
-                    sl_price = scaled_sl
+                anchored_sl = (
+                    entry_price - risk
+                    if signal.direction == "BUY"
+                    else entry_price + risk
+                )
+                if abs(anchored_sl - sl_price) > 0.01:
+                    print(f"[EXECUTOR] SL {sl_price} re-anchored to fill "
+                          f"{entry_price} keeping {risk:.2f}pts risk "
+                          f"-> {anchored_sl:.2f}")
+                sl_price = anchored_sl
+
+        # RISK-CAPPED QUANTITY: shrink size so full SL loss <= Rs1500
+        quantity = self._risk_capped_qty(entry_price, sl_price, quantity)
+        position["quantity"] = quantity
 
         # Ride up the ladder: TP at the top target (T3 first), and if the
         # price never gets there we still bank the highest target that
@@ -477,6 +564,9 @@ class SignalExecutor:
         touched_t1 = False
         touched_t2 = False
         touched_t3 = False
+        effective_sl = sl_price
+        breakeven_on = os.getenv("BREAKEVEN_AT_T1", "1") not in ("0", "", "false", "False")
+        trail_on = os.getenv("TRAIL_TO_T1_AT_T2", "1") not in ("0", "", "false", "False")
 
         # Peak price we will reach before reversing (T3 on the winning
         # path, a mid target on the losing path).  Simulate a realistic
@@ -507,18 +597,28 @@ class SignalExecutor:
 
             self.exchange.sim_prices.setdefault(symbol, {})["sell"] = current
 
-            # track touches
+            # track touches + BREAKEVEN / TRAIL (profit with less risk)
             if t1_price is not None and not touched_t1 and (
                 current >= t1_price if direction == "BUY" else current <= t1_price
             ):
                 touched_t1 = True
                 position["t1_touched"] = True
+                if breakeven_on:
+                    # T1 hit -> SL to entry: worst case now breakeven
+                    effective_sl = entry_price
+                    position["sl_price"] = entry_price
+                    print(f"[EXECUTOR] T1 hit -> SL to breakeven {entry_price:.2f}")
 
             if t2_price is not None and not touched_t2 and (
                 current >= t2_price if direction == "BUY" else current <= t2_price
             ):
                 touched_t2 = True
                 position["t2_touched"] = True
+                if trail_on and t1_price is not None:
+                    # T2 hit -> SL to T1: locks T1 profit, still aims T3
+                    effective_sl = t1_price
+                    position["sl_price"] = t1_price
+                    print(f"[EXECUTOR] T2 hit -> SL trailed to T1 {t1_price:.2f}")
 
             if t3_price is not None and not touched_t3 and (
                 current >= t3_price if direction == "BUY" else current <= t3_price
@@ -536,10 +636,13 @@ class SignalExecutor:
                 )
                 return
 
-            # SL hit -> bank best touched target, else full SL
+            # SL hit -> bank best touched target, else effective (trailed) SL.
+            # With breakeven/trail ON, a reversal after T1 can NEVER be a
+            # full SL loss: worst case is breakeven (T1 touched) or T1 profit
+            # (T2 touched).
             hit_sl = (
-                current <= sl_price if direction == "BUY"
-                else current >= sl_price
+                current <= effective_sl if direction == "BUY"
+                else current >= effective_sl
             )
             if hit_sl:
                 if touched_t2 and t2_price is not None:
@@ -553,9 +656,9 @@ class SignalExecutor:
                         position, signal, t1_price, "TAKE_PROFIT"
                     )
                 else:
-                    # nothing touched -> full SL loss
+                    # nothing touched -> tightened SL loss (capped small)
                     self._close_position(
-                        position, signal, sl_price, "STOPLOSS"
+                        position, signal, effective_sl, "STOPLOSS"
                     )
                 return
 
@@ -727,6 +830,7 @@ class SignalExecutor:
             "exit_price": exit_price,
             "exit_reason": reason,
             "pnl": pnl,
+            "channel": getattr(signal, "channel", ""),
         })
 
         print(f"[EXECUTOR] Trade logged -> {self.log_file}")

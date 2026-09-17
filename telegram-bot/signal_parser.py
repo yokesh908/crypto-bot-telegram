@@ -11,6 +11,7 @@ class Signal:
     targets: dict
     stoploss: float
     is_trade_signal: bool = True
+    channel: str = ""
 
 
 DIRECTION_WORDS = ["buy", "long", "bought", "sell", "short"]
@@ -26,6 +27,8 @@ DIRECTION_LABEL = {
 
 def _clean_symbol(raw_symbol):
     symbol = raw_symbol.strip()
+    # strip markdown/bold leftover ("**SENSEX 73700 PE" -> "SENSEX 73700 PE")
+    symbol = symbol.replace("*", "")
     symbol = re.sub(r"[\|｜,]", " ", symbol)
     symbol = re.sub(r"\s+", " ", symbol)
     symbol = symbol.upper()
@@ -270,6 +273,43 @@ def parse_signal(text):
         return None
 
     symbol = _extract_symbol(cleanup_text)
+
+    # --- sanity: option entry must be a PREMIUM, never index/future ----
+    # A BUY 73707 on a 73700 strike means the parser grabbed the SENSEX
+    # index level instead of the option premium (real premiums are a few
+    # hundred). Trade it and qty = 30000/73707 = 0.41 with TP/SL in the
+    # tens -> guaranteed -30k paper hole (seen 2026-09-17). Reject it.
+    try:
+        m = re.search(r"\b(?:NIFTY|BANKNIFTY|FINNIFTY|SENSEX)\s+(\d{4,5})\s+(?:CE|PE|CALL|PUT)\b",
+                      cleanup_text, re.IGNORECASE)
+        if m and entry is not None:
+            strike = float(m.group(1))
+            # option premium sanely < 20% of strike (e.g. 73700 strike
+            # -> premium must be < 14740; 73707 entry is rejected).
+            if entry > strike * 0.20 and strike >= 1000:
+                return Signal(
+                    raw_text=text,
+                    symbol=symbol,
+                    direction=direction,
+                    entry=entry,
+                    targets=targets,
+                    stoploss=stoploss,
+                    is_trade_signal=False,
+                )
+            # targets must also be premiums, not index levels
+            for _lbl, _tv in (targets or {}).items():
+                if _tv > strike * 0.30 and strike >= 1000:
+                    return Signal(
+                        raw_text=text,
+                        symbol=symbol,
+                        direction=direction,
+                        entry=entry,
+                        targets=targets,
+                        stoploss=stoploss,
+                        is_trade_signal=False,
+                    )
+    except Exception:
+        pass
 
     # A 'trade signal' must have an entry AND a stoploss AND at least
     # one target.  A signal that has targets but no SL is incomplete

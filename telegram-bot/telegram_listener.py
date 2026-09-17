@@ -60,10 +60,17 @@ class TelegramSignalListener:
         if not text:
             return
 
+        # channel name for per-channel P&L tracking
+        try:
+            chat = await event.get_chat()
+            channel_name = getattr(chat, "title", None) or str(event.chat_id)
+        except Exception:
+            channel_name = str(event.chat_id)
+
         print()
         print("=" * 70)
         print("[TELEGRAM] New message received")
-        print(f"Chat   : {event.chat_id}")
+        print(f"Chat   : {event.chat_id} ({channel_name})")
         print(f"Time   : {message.date}")
         print(f"Message: {text}")
         print("=" * 70)
@@ -87,11 +94,15 @@ class TelegramSignalListener:
                 return
 
         if self.callback:
-            asyncio.create_task(self._safe_call(text))
+            asyncio.create_task(self._safe_call(text, channel_name))
 
-    async def _safe_call(self, text):
+    async def _safe_call(self, text, channel=""):
         try:
-            self.callback(text)
+            try:
+                self.callback(text, channel)
+            except TypeError:
+                # backward compat: callbacks taking only text
+                self.callback(text)
         except Exception as error:
             print("[TELEGRAM][ERROR] Callback failed:", error)
 
@@ -129,19 +140,22 @@ class TelegramSignalListener:
 
                             threading.Thread(
                                 target=self._safe_history_callback,
-                                args=(text,),
+                                args=(text, str(channel)),
                                 daemon=True,
                             ).start()
 
             except Exception as error:
                 print(f"[TELEGRAM][HISTORY] ({channel}) error:", error)
 
-    def _safe_history_callback(self, text):
+    def _safe_history_callback(self, text, channel=""):
         """History backfill runs in a threads; guard it so one bad message
         does not take down the listener."""
         try:
             if self.callback:
-                self.callback(text)
+                try:
+                    self.callback(text, channel)
+                except TypeError:
+                    self.callback(text)
         except Exception as error:
             print(f"[TELEGRAM][HISTORY ERROR] {error}")
 
