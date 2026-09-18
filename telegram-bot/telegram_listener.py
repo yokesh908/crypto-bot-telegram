@@ -212,17 +212,46 @@ class TelegramSignalListener:
                 "(e.g. @your_signal_channel or comma-separated list)"
             )
 
+        # A fresh StringSession has an EMPTY entity cache: numeric channel
+        # IDs (e.g. -1004439654911) cannot be resolved until the account's
+        # dialogs have been fetched at least once. Warm the cache first,
+        # then resolve channels, skipping any that fail so one stale ID
+        # cannot crash-loop the whole bot.
+        try:
+            print("[TELEGRAM] Warming session entity cache (dialogs) ...")
+            count = 0
+            async for _dialog in self.client.iter_dialogs():
+                count += 1
+            print(f"[TELEGRAM] Session cache warmed ({count} dialogs).")
+        except Exception as error:
+            print("[TELEGRAM][WARN] Could not warm dialog cache:", error)
+
         await self._drain_history()
 
+        resolved = 0
         for channel in self.channels:
-            entity = await self._resolve_one(channel)
+            try:
+                entity = await self._resolve_one(channel)
+            except Exception as error:
+                print(
+                    f"[TELEGRAM][WARN] Could not resolve channel "
+                    f"'{channel}' - skipping. ({error})"
+                )
+                continue
 
             self.client.add_event_handler(
                 self._handle_message,
                 events.NewMessage(chats=entity),
             )
-
+            resolved += 1
             print("[TELEGRAM] Monitoring channel:", channel)
+
+        if resolved == 0:
+            raise ValueError(
+                "None of the TELEGRAM_CHANNEL entries could be resolved. "
+                "Make sure this account is a member of those channels and "
+                "the IDs/usernames are correct."
+            )
 
         print("[TELEGRAM] Waiting for signals ... Press Ctrl+C to stop.")
 
