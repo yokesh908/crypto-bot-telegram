@@ -35,9 +35,18 @@ def main():
 
     win_rate = len(wins) / total * 100
 
+    today = datetime.now().date().isoformat()
+    today_rows = [
+        r for r in rows
+        if (r.get("time") or "")[:10] == today
+    ]
+    today_pnl = sum(float(r["pnl"] or 0) for r in today_rows)
+
     print("=" * 60)
     print("PAPER TRADING REPORT")
     print("=" * 60)
+    print(f"Today        : {today} "
+          f"({len(today_rows)} trades, PnL {today_pnl:,.2f} INR)")
     print(f"Total trades : {total}")
     print(f"Wins         : {len(wins)}")
     print(f"Losses       : {len(losses)}")
@@ -60,6 +69,48 @@ def main():
             f"  {day}: {d['n']} trades, "
             f"{d['wins']}/{d['n']} wins, "
             f"PnL {d['pnl']:,.2f} INR"
+        )
+
+    # Per channel: which channels feed profits vs losses, ranked by
+    # expectancy = (avg win x win rate) - (avg loss x loss rate).
+    # Expectancy is the average INR you expect PER TRADE from this channel.
+    print()
+    print("Per channel (ranked by expectancy, best first):")
+    by_channel = defaultdict(lambda: {"n": 0, "pnl": 0.0, "wins": 0,
+                                      "win_sum": 0.0, "loss_sum": 0.0})
+    for r in rows:
+        ch = (r.get("channel") or "").strip() or "-"
+        pnl = float(r["pnl"] or 0)
+        d = by_channel[ch]
+        d["n"] += 1
+        d["pnl"] += pnl
+        if pnl > 0:
+            d["wins"] += 1
+            d["win_sum"] += pnl
+        elif pnl < 0:
+            d["loss_sum"] += pnl  # negative
+
+    def _expectancy(d):
+        n, w = d["n"], d["wins"]
+        if n == 0:
+            return 0.0
+        win_rate = w / n
+        avg_win = d["win_sum"] / w if w else 0.0
+        losses = n - w
+        avg_loss = abs(d["loss_sum"] / losses) if losses else 0.0
+        return avg_win * win_rate - avg_loss * (1 - win_rate)
+
+    for ch in sorted(by_channel, key=lambda c: _expectancy(by_channel[c]),
+                     reverse=True):
+        d = by_channel[ch]
+        n, w = d["n"], d["wins"]
+        exp = _expectancy(d)
+        print(
+            f"  {ch:<30}: {n} trades, {w}/{n} wins "
+            f"({(w / n * 100) if n else 0:.0f}%), "
+            f"PnL {d['pnl']:,.2f}, "
+            f"expectancy {exp:>+9,.2f} INR/trade"
+            f"{'  [UNPROFITABLE - consider muting]' if exp < 0 else ''}"
         )
 
     print()

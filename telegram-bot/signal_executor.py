@@ -73,6 +73,17 @@ class SignalExecutor:
         if not self.target_priority:
             self.target_priority = ["T1"]
 
+        self.running = False
+        self.positions = {}
+        self.paper_drift = {}
+        self.seen_signals = {}
+        self.pending = []
+        self._pending_lock = threading.Lock()
+
+        # --- loss-reduction guard state ---
+        self._loss_streak = 0          # consecutive losing trades
+        self._cooldown_until = 0.0     # epoch sec: pause ALL signals until
+        self._index_cooldown_until = {}  # index -> epoch sec: block re-entry
         self._ensure_log()
 
     def _ensure_log(self):
@@ -197,6 +208,123 @@ class SignalExecutor:
         return qty
 
     # ----------------------------------------------------------
+    # LOSS-REDUCTION GUARDS
+    #   MAX_DAILY_LOSS_INR   stop trading for the day after this loss
+    #   MAX_CONSEC_LOSSES    N straight losses -> pause everything
+    #   LOSS_COOLDOWN_MIN    minutes the pause lasts
+    #   INDEX_COOLDOWN_MIN   minutes a single index is blocked after a loss
+    # ----------------------------------------------------------
+
+    def _index_of(self, symbol):
+        """Extract the underlying index (NIFTY/SENSEX/...) from a symbol."""
+        import re
+
+        # search (not match): channel symbols can carry markdown noise
+        # like "**SENSEX 73700 PE" or leading junk
+        m = re.search(
+            r"\b(NIFTY|BANKNIFTY|FINNIFTY|SENSEX|MIDCPNIFTY)\b",
+            (symbol or "").upper(),
+        )
+        return m.group(1) if m else (symbol or "UNKNOWN").strip().upper()
+
+    def _todays_pnl(self):
+        """Sum of realized PnL for rows dated today in trades_log.csv."""
+        if not os.path.exists(self.log_file):
+            return 0.0
+
+        today = datetime.now().date().isoformat()
+        total = 0.0
+        try:
+            with open(self.log_file) as f:
+                for row in csv.DictReader(f):
+                    if (row.get("time") or "")[:10] == today:
+                        try:
+                            total += float(row.get("pnl") or 0)
+                        except (TypeError, ValueError):
+                            pass
+        except OSError:
+            pass
+        return total
+
+    def _risk_guards_block(self, signal):
+        """Return a skip-reason string if a risk guard blocks this signal,
+        or None if it may trade."""
+        now = time.time()
+
+        # 1) Daily loss stop: once today's realized PnL breaches the floor,
+        #    no more trades until the calendar day rolls over.
+        try:
+            daily_limit = float(os.getenv("MAX_DAILY_LOSS_INR", "6000"))
+        except ValueError:
+            daily_limit = 6000.0
+        if daily_limit > 0:
+            pnl_today = self._todays_pnl()
+            if pnl_today <= -abs(daily_limit):
+                return (
+                    f"DAILY LOSS STOP: today's PnL {pnl_today:,.2f} INR "
+                    f"is at/below the -{abs(daily_limit):,.0f} limit. "
+                    "No more trades until tomorrow."
+                )
+
+        # 2) Consecutive-loss cooldown: pause ALL signals for a while
+        #    after MAX_CONSEC_LOSSES straight losses (chop protection).
+        if self._cooldown_until > now:
+            wait = (self._cooldown_until - now) / 60
+            return (
+                f"LOSS COOLDOWN: {self._loss_streak} consecutive losses -> "
+                f"pausing ALL signals for another {wait:.0f} min."
+            )
+
+        # 3) Per-index cooldown: after a loss on an index, block that index
+        #    so one bad market read can't be re-bet immediately.
+        index = self._index_of(signal.symbol)
+        idx_until = self._index_cooldown_until.get(index, 0)
+        if idx_until > now:
+            wait = (idx_until - now) / 60
+            return (
+                f"INDEX COOLDOWN: just booked a loss on {index} -> next "
+                f"{index} signal allowed in {wait:.0f} min."
+            )
+
+        return None
+
+    def _register_trade_result(self, pnl, symbol):
+        """Called after every closed trade: updates the loss streak and
+        arms the cooldowns that protect subsequent signals."""
+        if pnl >= 0:
+            self._loss_streak = 0
+            return
+
+        self._loss_streak += 1
+
+        try:
+            max_streak = int(float(os.getenv("MAX_CONSEC_LOSSES", "2")))
+        except ValueError:
+            max_streak = 2
+
+        # consecutive losses -> global pause
+        if max_streak > 0 and self._loss_streak >= max_streak:
+            try:
+                cooldown_min = float(os.getenv("LOSS_COOLDOWN_MIN", "60"))
+            except ValueError:
+                cooldown_min = 60.0
+            if cooldown_min > 0:
+                self._cooldown_until = time.time() + cooldown_min * 60
+                print(f"[RISK-GUARD] {self._loss_streak} consecutive losses "
+                      f"-> pausing ALL signals for {cooldown_min:.0f} min")
+
+        # any loss -> block that underlying for a while
+        try:
+            index_cooldown = float(os.getenv("INDEX_COOLDOWN_MIN", "30"))
+        except ValueError:
+            index_cooldown = 30.0
+        if index_cooldown > 0:
+            index = self._index_of(symbol)
+            self._index_cooldown_until[index] = time.time() + index_cooldown * 60
+            print(f"[RISK-GUARD] loss on {index} -> next {index} signal "
+                  f"allowed in {index_cooldown:.0f} min")
+
+    # ----------------------------------------------------------
     # SIGNAL HANDLER (called from Telegram thread)
     # ----------------------------------------------------------
 
@@ -297,6 +425,15 @@ class SignalExecutor:
             print(f"[EXECUTOR] Another trade is in progress. "
                   f"Queued signal #{len(self.pending)} "
                   f"({signal.symbol} {signal.entry}) - will run next.")
+            return
+
+        # RISK GUARDS: daily loss stop / loss cooldown / per-index cooldown.
+        # Checked here (not in on_signal_text) so queued signals are also
+        # validated at the moment they would actually run.
+        skip_reason = self._risk_guards_block(signal)
+        if skip_reason:
+            print(f"[RISK-GUARD] Skipping {signal.symbol} {signal.entry}: "
+                  f"{skip_reason}")
             return
 
         started = time.perf_counter()
@@ -834,6 +971,9 @@ class SignalExecutor:
         })
 
         print(f"[EXECUTOR] Trade logged -> {self.log_file}")
+
+        # feed the risk guards (loss streak / cooldowns)
+        self._register_trade_result(pnl, symbol)
 
         # Don't miss trades: run anything queued while this one was open.
         self._drain_pending()

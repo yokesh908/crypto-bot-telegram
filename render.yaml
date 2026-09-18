@@ -45,9 +45,9 @@ services:
       - key: TRAIL_TO_T1_AT_T2
         value: "1"
       - key: MAX_RISK_PER_TRADE_INR
-        value: "3000"
+        value: "1500"
       - key: TARGET_PRIORITY
-        value: "T3,T2,T1"
+        value: "T1,T2,T3"
       - key: HISTORY_BACKFILL
         value: "0"
       - key: SL_OFFSET_POINTS
