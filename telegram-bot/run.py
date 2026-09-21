@@ -49,7 +49,6 @@ def main():
     threading.Thread(target=start_health_server, daemon=True).start()
 
     load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
     print("=" * 70)
     print("TELEGRAM SIGNAL -> AUTO TRADE BOT")
@@ -66,20 +65,26 @@ def main():
         print()
         return
 
-    # ------------------------------------------------------------------
-    # Watchdog: if the client drops, restart the listener instead of
-    # exiting.  This prevents 7-day gaps like Sep 10-14 where the bot was
-    # never running.  The systemd restart loop will still catch a full
-    # process death, but this keeps the *listener* alive through transient
-    # disconnects (the "ConnectionError: Connection to Telegram failed N
-    # time(s)" path in Telethon).
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Watchdog: if the client drops, restart the listener instead of
+# exiting.  This prevents 7-day gaps like Sep 10-14 where the bot was
+# never running.  The systemd restart loop will still catch a full
+# process death, but this keeps the *listener* alive through transient
+# disconnects (the "ConnectionError: Connection to Telegram failed N
+# time(s)" path in Telethon).
+# ------------------------------------------------------------------
     max_restarts = int(os.getenv("BOT_MAX_RESTARTS", "10"))
     restart_delay = float(os.getenv("BOT_RESTART_DELAY_SEC", "15"))
     restarts = 0
+    backoff = restart_delay
 
-    while restarts < max_restarts:
+    while True:
         try:
+            if not acquire_single_instance_lock(
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot.pid")
+            ):
+                print("[WATCHDOG] Another instance is running. Exiting.")
+                return
             run_once()
             break
         except KeyboardInterrupt:
@@ -87,17 +92,33 @@ def main():
             break
         except Exception as error:
             restarts += 1
-            print()
-            print("=" * 70)
-            print(f"[WATCHDOG] Bot run failed (attempt {restarts}/{max_restarts})")
-            print(f"           {error}")
-            print("=" * 70)
-            if restarts < max_restarts:
-                print(f"[WATCHDOG] Restarting in {restart_delay:.0f}s ...")
-                time.sleep(restart_delay)
-            else:
-                print("[WATCHDOG] Max restarts reached. Giving up.")
+            err_str = str(error)
+            if "two different IP addresses" in err_str or "authorization key" in err_str:
+                print()
+                print("=" * 70)
+                print("[WATCHDOG] SESSION CONFLICT detected!")
+                print("           The same Telegram session is being used")
+                print("           from another device/IP. Regenerate session.")
+                print("=" * 70)
+                delay = float(os.getenv("SESSION_CONFLICT_DELAY_SEC", "300"))
+                print(f"[WATCHDOG] Waiting {delay:.0f}s before retry...")
+                time.sleep(delay)
+                backoff = restart_delay
+            elif restarts >= max_restarts:
+                print()
+                print("=" * 70)
+                print(f"[WATCHDOG] Max restarts ({max_restarts}) reached. Giving up.")
+                print("=" * 70)
                 sys.exit(1)
+            else:
+                print()
+                print("=" * 70)
+                print(f"[WATCHDOG] Bot run failed (attempt {restarts}/{max_restarts})")
+                print(f"           {error}")
+                print("=" * 70)
+                print(f"[WATCHDOG] Restarting in {backoff:.0f}s ...")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 300)
 
 
 def run_once():

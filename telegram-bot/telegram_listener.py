@@ -199,7 +199,20 @@ class TelegramSignalListener:
                 "(get from https://my.telegram.org/apps)."
             )
 
-        await self.client.start()
+        max_conflict_delay = float(os.getenv("SESSION_CONFLICT_DELAY_SEC", "300"))
+
+        for attempt in range(5):
+            try:
+                await self.client.start()
+                break
+            except Exception as error:
+                err_str = str(error).lower()
+                if "two different ip" in err_str or "authorization key" in err_str:
+                    print(f"[TELEGRAM] Session conflict detected. "
+                          f"Waiting {max_conflict_delay:.0f}s before retry {attempt+1}/5...")
+                    await asyncio.sleep(max_conflict_delay)
+                    continue
+                raise
 
         me = await self.client.get_me()
 

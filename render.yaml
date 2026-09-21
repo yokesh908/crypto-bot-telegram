@@ -57,6 +57,8 @@ services:
       - key: SIGNAL_DEDUP_WINDOW_SEC
         value: "600"
       - key: BOT_MAX_RESTARTS
-        value: "100000"
+        value: "10"
       - key: BOT_RESTART_DELAY_SEC
         value: "15"
+      - key: SESSION_CONFLICT_DELAY_SEC
+        value: "300"
