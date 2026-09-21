@@ -11,19 +11,19 @@ services:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: TELEGRAM_API_ID
-        sync: false
+        value: "33126416"
       - key: TELEGRAM_API_HASH
-        sync: false
+        value: "7dc75eb4bae9e30dbcbd546835598cd1"
       - key: TELEGRAM_CHANNEL
-        sync: false
+        value: "-1004439654911,-1004446892030,-1004347145435,-1003406273967,-1004358270045,-1004454599252"
       - key: TELEGRAM_STRING_SESSION
-        sync: false
+        value: "1BVtsOIoBuyQaCnRUBIqUwtXeoSdkZmklnzWGt-ZnEUSKT8JbyDJx3DmG0tcXLLZg99nfp9Wqlwe_6roU9hXL4RHUEtvBV7hVoQl524xvMBS_n4Cp4iDoDFgu9kaTfHh0vwOUVIFkPqdS8TaNzA6K2ilk23H5KQdKKrgcq-DzTZngYH6yhoshNFywWvocW8BQBv0C6B5lUb-_--TQ_PSn6SzfA3s7LLfQw4FgUZdd2Y_IR-uPmbV7zRrD4KgtbaMTGzSr13-vLCxG8mX3kZH-wLg0cXxpMzkTu1eHGl6dovn4JZAKMqakRvP38l03iXJlMqkf7WotG23AAPIjtp0yChiQRUKL0yQ="
       - key: KITE_API_KEY
-        sync: false
+        value: "f8uzbgk8ctek2sqg"
       - key: KITE_API_SECRET
-        sync: false
+        value: "17eapchnifujpbxoi7vpfjdde7xhp74"
       - key: KITE_ACCESS_TOKEN
-        sync: false
+        value: "your_kite_access_token"
       - key: EXCHANGE_PROVIDER
         value: paper
       - key: MODE
