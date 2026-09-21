@@ -41,12 +41,20 @@ class TelegramSignalListener:
                 StringSession(string_session),
                 self.api_id,
                 self.api_hash,
+                use_ipv6=False,
+                device_model="crypto-bot-telegram",
+                system_version="Linux",
+                app_version="1.0",
             )
         else:
             self.client = TelegramClient(
                 self.session_file,
                 self.api_id,
                 self.api_hash,
+                use_ipv6=False,
+                device_model="crypto-bot-telegram",
+                system_version="Linux",
+                app_version="1.0",
             )
 
     async def _handle_message(self, event):
